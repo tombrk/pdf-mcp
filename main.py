@@ -10,6 +10,7 @@ import asyncio
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from typing import Optional
+from pathlib import Path
 
 
 class Passage(BaseModel):
@@ -37,8 +38,15 @@ class Passage(BaseModel):
 
 
 @arguably.command
-def main(dir: str):
-    vector_store = MilvusVectorStore("./milvus.db", overwrite=False, dim=384)
+def main(dir: str,
+         state: Path = Path.home() / ".local" / "share" / "pdf-mcp",
+         model: str = "BAAI/bge-small-en-v1.5",
+    ):
+    embed_model = HuggingFaceEmbedding(model_name=model)
+    embed_dim = len(embed_model.get_text_embedding(""))
+
+    state.mkdir(parents=True, exist_ok=True)
+    vector_store = MilvusVectorStore(str(state / "milvus.db"), overwrite=False, dim=embed_dim)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
     coll = vector_store.client.query(
@@ -50,9 +58,11 @@ def main(dir: str):
 
     try:
         dir_reader = SimpleDirectoryReader(
+            recursive=True,
             file_extractor={".pdf": pdf_reader},
             input_dir=dir,
             exclude=exclude,
+            required_exts=[".pdf"],
         )
         docs = dir_reader.load_data(num_workers=4)
     except ValueError as e:
@@ -60,7 +70,6 @@ def main(dir: str):
             raise
         docs: list[Document] = []
 
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
     VectorStoreIndex.from_documents(
         documents=docs,
