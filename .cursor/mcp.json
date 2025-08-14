@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "pdf": {
+            "command": "uv",
+            "args": [
+                "run",
+                "index.py",
+                "docs"
+            ]
+        }
+    }
+}
