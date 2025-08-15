@@ -1,6 +1,6 @@
 import arguably
 from llama_index.core import StorageContext
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.milvus import MilvusVectorStore
 from fastmcp import FastMCP
 from fastapi import FastAPI, HTTPException
@@ -27,6 +27,7 @@ class Passage(BaseModel):
     bbox: dict = Field(exclude=True)
 
     def from_chunk(chunk: dict):
+        print(chunk)
         meta = chunk["doc_items"][0]
         return Passage(
             file=chunk["file_name"],
@@ -44,10 +45,10 @@ class Passage(BaseModel):
 @arguably.command
 def main(
     state: Path = Path.home() / ".local" / "share" / "pdf-mcp",
-    model: str = "BAAI/bge-small-en-v1.5",
+    model: str = "nomic-embed-text",
 ):
-    embed_model = HuggingFaceEmbedding(model_name=model)
-    embed_dim = len(embed_model.get_text_embedding(""))
+    embed_model = OllamaEmbedding(model)
+    embed_dim = len(embed_model.get_text_embedding("abc"))
 
     state.mkdir(parents=True, exist_ok=True)
     vector_store = MilvusVectorStore(
@@ -61,22 +62,37 @@ def main(
     mcp = FastMCP("PDF Papers")
 
     @mcp.tool
-    def pdf_search(query: str, top_k: int = 10) -> list[Passage]:
+    def search(query: str, top_k: int = 10) -> list[Passage]:
         """Search for all queries in pdf sources using vector similarity matching"""
         embeddings = embed_model.get_text_embedding_batch([query])
         res = vector_store.client.search(
             vector_store.collection_name,
             embeddings,
             limit=top_k,
-            output_fields=["text", "file_name", "doc_items", "headings"],
+            output_fields=[
+                "text",
+                "file_name",
+                "file_path",
+                "distance",
+                "doc_items",
+                "headings",
+            ],
         )
         return list(map(Passage.from_chunk, res[0]))
 
     @mcp.tool
-    def pdf_section(section: str) -> list[Passage]:
+    def read_section(section: str) -> list[Passage]:
         """Read an entire section by name as previously seen in the search output"""
         res = vector_store.client.query(
             vector_store.collection_name, filter=f'headings[0] == "{section}"'
+        )
+        return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
+
+    @mcp.tool
+    def read_file(file_name: str) -> list[Passage]:
+        """Read an entire document by its file name, as previously seen in the search output"""
+        res = vector_store.client.query(
+            vector_store.collection_name, filter=f'file_name == "{file_name}"'
         )
         return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
 

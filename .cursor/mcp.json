@@ -1,0 +1,7 @@
+{
+    "mcpServers": {
+        "pdf-mcp": {
+            "url": "http://localhost:7777/mcp/"
+        }
+    }
+}
