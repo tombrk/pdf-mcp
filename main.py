@@ -27,7 +27,6 @@ class Passage(BaseModel):
     bbox: dict = Field(exclude=True)
 
     def from_chunk(chunk: dict):
-        print(chunk)
         meta = chunk["doc_items"][0]
         return Passage(
             file=chunk["file_name"],
@@ -40,7 +39,6 @@ class Passage(BaseModel):
             bbox=meta["prov"][0]["bbox"],
             ref=meta["self_ref"],
         )
-
 
 @arguably.command
 def main(
@@ -95,6 +93,14 @@ def main(
             vector_store.collection_name, filter=f'file_name == "{file_name}"'
         )
         return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
+
+    @mcp.tool
+    def list_files() -> list[str]:
+        """List all indexed files. Filenames include author and title"""
+        coll = vector_store.client.query(
+            vector_store.collection_name, limit=16384, output_fields=["file_name"]
+        )
+        return list({x["file_name"] for x in coll})
 
     mcp_app = mcp.http_app(path="/")
     app = FastAPI(title="PDF MCP", lifespan=mcp_app.lifespan)
