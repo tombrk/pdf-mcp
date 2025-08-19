@@ -18,3 +18,15 @@ dependencies = [
     "uvicorn>=0.35.0",
     "httpx>=0.28.1",
 ]
+
+# Provide a console script for local runs and packaging tools
+[project.scripts]
+pdf-mcp = "main:main"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Include top-level Python modules in the wheel
+py-modules = ["main", "zotero"]
