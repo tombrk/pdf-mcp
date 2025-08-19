@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from typing import Optional, Annotated
 from pathlib import Path
 import uvicorn
+import sys
+import threading
+import webbrowser
 import pymupdf
 import io
 import asyncio
@@ -546,8 +549,78 @@ def main(
             + "</body></html>"
         )
 
+    # If running in normal CLI mode, start the HTTP server (used by tray as well)
     uvicorn.run(app, host="0.0.0.0", port=7777)
 
 
 if __name__ == "__main__":
-    arguably.run()
+    # Support a macOS menu bar (tray) mode: `python main.py --tray`
+    # Default behavior still runs the CLI via arguably
+    if "--tray" in sys.argv or "--menubar" in sys.argv or "--menu-bar" in sys.argv:
+        # Start the server in a background thread
+        def start_server():
+            main()
+
+        server_thread = threading.Thread(target=start_server, name="uvicorn-server", daemon=True)
+        server_thread.start()
+
+        if sys.platform == "darwin":
+            # macOS: use rumps for true status bar app with click callback
+            try:
+                import rumps
+            except Exception:
+                # Fallback to pystray if rumps is missing
+                rumps = None
+
+            if rumps is not None:
+                def open_home(_=None):
+                    webbrowser.open("http://localhost:7777/")
+
+                def quit_app(_=None):
+                    sys.exit(0)
+
+                app = rumps.App("Zotero MCP", callback=open_home)
+                app.menu = [
+                    rumps.MenuItem("Open Home", callback=open_home),
+                    None,
+                    rumps.MenuItem("Quit", callback=quit_app),
+                ]
+                app.run()
+                sys.exit(0)
+
+        # Non-macOS or rumps unavailable: use pystray fallback
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except Exception:
+            print("Tray mode requires 'pystray' and 'Pillow' (or 'rumps' on macOS). Install them first.")
+            raise
+
+        def _create_icon(size: int = 16):
+            img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+            draw = ImageDraw.Draw(img)
+            r = size // 2 - 2
+            center = (size // 2, size // 2)
+            bbox = [center[0] - r, center[1] - r, center[0] + r, center[1] + r]
+            draw.ellipse(bbox, fill=(37, 99, 235, 255))
+            r2 = max(2, size // 6)
+            bbox2 = [center[0] - r2, center[1] - r2, center[0] + r2, center[1] + r2]
+            draw.ellipse(bbox2, fill=(255, 255, 255, 255))
+            return img
+
+        def on_click(icon, item=None):
+            webbrowser.open("http://localhost:7777/")
+
+        def on_quit(icon, item):
+            icon.visible = False
+            icon.stop()
+            sys.exit(0)
+
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Home", on_click, default=True),
+            pystray.MenuItem("Quit", on_quit)
+        )
+        icon = pystray.Icon("Zotero MCP", _create_icon(18), "Zotero MCP", menu)
+        icon.run()
+    else:
+        arguably.run()
