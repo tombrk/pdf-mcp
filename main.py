@@ -47,6 +47,10 @@ class Passage(BaseModel):
             zotero_item=(zot or {}).get("item"),
         )
 
+class File(BaseModel):
+    key: str
+    name: str
+    abstract: str
 
 @arguably.command
 def main(
@@ -100,20 +104,32 @@ def main(
         return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
 
     @mcp.tool
-    def read_file(file_name: str) -> list[Passage]:
-        """Read an entire document by its file name, as previously seen in the search output"""
+    def read_file(item_key: str) -> list[Passage]:
+        """Read an entire document by its Zotero item key, as returned by list_files"""
         res = vector_store.client.query(
-            vector_store.collection_name, filter=f'file_name == "{file_name}"'
+            vector_store.collection_name, filter=f'zotero["item"] == "{item_key}"'
         )
         return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
 
     @mcp.tool
-    def list_files() -> list[str]:
-        """List all indexed files. Filenames include author and title"""
+    def list_files() -> list[File]:
+        """List all indexed files with metadata"""
         coll = vector_store.client.query(
             vector_store.collection_name, limit=16384, output_fields=["file_name", "zotero", "abstract"]
         )
-        return list({x["file_name"] for x in coll})
+        files = {}
+        for x in coll:
+            zot = x.get("zotero")
+            if not zot: raise RuntimeError
+            key = zot.get("item")
+            if not key: raise RuntimeError
+            if key and key not in files:
+                files[key] = File(
+                    key=key,
+                    name=x["file_name"],
+                    abstract=x.get("abstract", "")
+                )
+        return list(files.values())
 
     mcp_app = mcp.http_app(path="/")
     app = FastAPI(title="PDF MCP", lifespan=mcp_app.lifespan)
