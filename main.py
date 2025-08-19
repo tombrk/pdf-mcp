@@ -4,7 +4,7 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.milvus import MilvusVectorStore
 from fastmcp import FastMCP
 from fastapi import FastAPI, HTTPException, Form
-from fastapi.responses import Response, HTMLResponse
+from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Annotated
 from pathlib import Path
@@ -27,9 +27,12 @@ class Passage(BaseModel):
     section: str = Field(description="The subsection this passage appeared under")
     ref: str = Field(exclude=True)
     bbox: dict = Field(exclude=True)
+    title: Optional[str] = Field(default=None, description="Document title")
+    zotero_item: Optional[str] = Field(default=None, description="Zotero item key")
 
     def from_chunk(chunk: dict):
         meta = chunk["doc_items"][0]
+        zot = chunk.get("zotero") or {}
         return Passage(
             file=chunk["file_name"],
             path=chunk["file_path"],
@@ -40,9 +43,10 @@ class Passage(BaseModel):
             page=meta["prov"][0]["page_no"],
             bbox=meta["prov"][0]["bbox"],
             ref=meta["self_ref"],
+            title=chunk.get("title"),
+            zotero_item=(zot or {}).get("item"),
         )
 
-    # Models moved to zotero.py
 
 @arguably.command
 def main(
@@ -81,6 +85,8 @@ def main(
                 "distance",
                 "doc_items",
                 "headings",
+                "title",
+                "zotero",
             ],
         )
         return list(map(Passage.from_chunk, res[0]))
@@ -105,7 +111,7 @@ def main(
     def list_files() -> list[str]:
         """List all indexed files. Filenames include author and title"""
         coll = vector_store.client.query(
-            vector_store.collection_name, limit=16384, output_fields=["file_name"]
+            vector_store.collection_name, limit=16384, output_fields=["file_name", "zotero", "abstract"]
         )
         return list({x["file_name"] for x in coll})
 
@@ -122,19 +128,83 @@ def main(
             action_html = (
                 f"<button class=\"btn btn-secondary\" disabled>Indexed</button>"
             )
+            title_html = (
+                f"<a class=\"doc-link\" href=\"/{item.key}\">{item.data.title}</a>"
+            )
         else:
             action_html = (
                 f"<button class=\"btn\" hx-post=\"/index-zotero-items\" hx-vals='{{\"key\": \"{item.key}\"}}' "
                 f"hx-target=\"#progress\" hx-swap=\"innerHTML\">Index</button>"
             )
+            title_html = item.data.title
         return (
             f"<tr id=\"row-{item.key}\">"
             f"<td class=\"checkbox-col\">{checkbox_html}</td>"
             f"<td class=\"authors\">{item.meta.creatorSummary}</td>"
-            f"<td class=\"title\">{item.data.title}</td>"
+            f"<td class=\"title\">{title_html}</td>"
             f"<td>{action_html}</td>"
             f"</tr>"
         )
+    def render_header_html(active: str = "") -> str:
+        active_home = " nav-link-active" if active == "home" else ""
+        active_explore = " nav-link-active" if active == "explore" else ""
+        return (
+            "<div class=\"site-header\">"
+            "<div class=\"brand\"><a class=\"brand-link\" href=\"/\">Zotero MCP</a></div>"
+            "<nav class=\"nav-links\">"
+            f"<a class=\"nav-link{active_home}\" href=\"/\">Home</a>"
+            f"<a class=\"nav-link{active_explore}\" href=\"/explore\">Explore</a>"
+            "</nav>"
+            "</div>"
+        )
+
+    def styles() -> str:
+        return (
+            "<style>"
+            ":root{--bg:#ffffff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--thead-bg:#f9fafb;--primary:#2563eb;--primary-hover:#1d4ed8;--secondary:#374151;--secondary-hover:#303846;--success:#16a34a;--card-bg:#111827;--card-text:#e5e7eb;--card-border:#374151;--track:#1f2937;}"
+            "*{box-sizing:border-box;}"
+            "body{font-family: ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", \"Apple Color Emoji\", \"Segoe UI Emoji\"; padding:20px; color:var(--text); background:var(--bg);}"
+            "h2{margin:0 0 10px;}"
+            ".muted{color:var(--muted);}"
+            ".toolbar{display:flex; gap:8px; align-items:center; margin-bottom:10px;}"
+            ".input{border:1px solid var(--border); border-radius:6px; padding:8px 10px; width:100%; max-width:560px;}"
+            ".site-header{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--border);}"
+            ".brand-link{font-weight:700; color:var(--text); text-decoration:none;}"
+            ".nav-links{display:flex; gap:10px;}"
+            ".nav-link{color:var(--muted); text-decoration:none; padding:6px 8px; border-radius:6px;}"
+            ".nav-link:hover{background:var(--thead-bg); color:var(--text);}" 
+            ".nav-link-active{background:var(--thead-bg); color:var(--text);}" 
+            "table{border-collapse:collapse; width:100%;}"
+            "th,td{border-bottom:1px solid var(--border); padding:8px 10px;}"
+            "th{text-align:left; color:#374151; background:var(--thead-bg);}" 
+            ".checkbox-col{width:28px;}"
+            ".title{font-weight:500;}"
+            ".authors{color:var(--muted);}"
+            ".doc-link{color:var(--text); text-decoration:underline;}"
+            ".doc-link:hover{text-decoration:underline;}"
+            ".btn{background:var(--primary); color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; text-align:center; display:inline-block;}"
+            ".btn:not([disabled]):hover{background:var(--primary-hover);}" 
+            ".btn-secondary{background:var(--secondary);}" 
+            ".btn-secondary:not([disabled]):hover{background:var(--secondary-hover);}" 
+            ".btn-success{background:var(--success); cursor:default; opacity:.9;}"
+            ".btn-success[disabled]{cursor:default;}"
+            ".btn[disabled]{cursor:default; opacity:.6; pointer-events:none;}"
+            ".progress-card{position:fixed; right:16px; bottom:16px; width:320px; background:var(--card-bg); color:var(--card-text); border:1px solid var(--card-border); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.35);}" 
+            ".progress-header{padding:12px 14px; border-bottom:1px solid var(--card-border); display:flex; align-items:center; justify-content:space-between;}"
+            ".progress-title{font-weight:600;}"
+            ".progress-count{font-size:12px; color:#9ca3af;}"
+            ".progress-body{padding:12px 14px;}"
+            ".progress-bar{height:8px; background:var(--track); border-radius:9999px; overflow:hidden;}"
+            ".progress-bar-fill{height:100%; background:linear-gradient(90deg,#60a5fa,#22d3ee);}" 
+            ".progress-remaining{margin-top:8px; font-size:12px; color:#9ca3af;}"
+            ".results-columns{column-width:22rem; column-gap:12px; padding-top:12px;}"
+            ".passage{border:1px solid var(--border); border-radius:10px; padding:12px; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,0.04); break-inside:avoid; display:inline-block; width:100%; margin:12px 0;}"
+            ".bottom-bar{margin-top:10px; display:flex; align-items:center; justify-content:space-between;}"
+            ".link-small{font-size:12px; color:var(--muted); text-decoration:none; padding:2px 6px; border-radius:6px;}"
+            ".link-small:hover{background:var(--thead-bg); color:var(--text);}" 
+            "</style>"
+        )
+
 
 
     def is_indexed(key: str) -> bool:
@@ -267,38 +337,9 @@ def main(
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             "<title>Zotero MCP</title>"
             "<script src=\"https://unpkg.com/htmx.org@2.0.6\"></script>"
-            "<style>"
-            ":root{--bg:#ffffff;--text:#111827;--muted:#6b7280;--border:#e5e7eb;--thead-bg:#f9fafb;--primary:#2563eb;--primary-hover:#1d4ed8;--secondary:#374151;--secondary-hover:#303846;--success:#16a34a;--card-bg:#111827;--card-text:#e5e7eb;--card-border:#374151;--track:#1f2937;}"
-            "*{box-sizing:border-box;}"
-            "body{font-family: ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", \"Apple Color Emoji\", \"Segoe UI Emoji\"; padding:20px; color:var(--text); background:var(--bg);}" 
-            "h2{margin:0 0 10px;}"
-            ".muted{color:var(--muted);}" 
-            ".root-note{margin-bottom:12px;}"
-            ".toolbar{display:flex; gap:8px; align-items:center; margin-bottom:10px;}"
-            "table{border-collapse:collapse; width:100%;}"
-            "th,td{border-bottom:1px solid var(--border); padding:8px 10px;}"
-            "th{text-align:left; color:#374151; background:var(--thead-bg);}"
-            ".checkbox-col{width:28px;}"
-            ".title{font-weight:500;}"
-            ".authors{color:var(--muted);}" 
-            ".btn{background:var(--primary); color:#fff; border:none; border-radius:6px; padding:6px 10px; cursor:pointer; width:100px; text-align:center; display:inline-block;}"
-            ".btn:not([disabled]):hover{background:var(--primary-hover);}"
-            ".btn-secondary{background:var(--secondary);}"
-            ".btn-secondary:not([disabled]):hover{background:var(--secondary-hover);}"
-            ".btn-success{background:var(--success); cursor:default; opacity:.9;}"
-            ".btn-success[disabled]{cursor:default;}"
-            ".btn[disabled]{cursor:default; opacity:.6; pointer-events:none;}"
-            ".progress-card{position:fixed; right:16px; bottom:16px; width:320px; background:var(--card-bg); color:var(--card-text); border:1px solid var(--card-border); border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.35);}" 
-            ".progress-header{padding:12px 14px; border-bottom:1px solid var(--card-border); display:flex; align-items:center; justify-content:space-between;}"
-            ".progress-title{font-weight:600;}"
-            ".progress-count{font-size:12px; color:#9ca3af;}"
-            ".progress-body{padding:12px 14px;}"
-            ".progress-bar{height:8px; background:var(--track); border-radius:9999px; overflow:hidden;}"
-            ".progress-bar-fill{height:100%; background:linear-gradient(90deg,#60a5fa,#22d3ee);}" 
-            ".progress-remaining{margin-top:8px; font-size:12px; color:#9ca3af;}"
-            "</style>"
+            f"{styles()}"
             "</head><body>"
-            f"<h2>Zotero MCP</h2>"
+            f"{render_header_html('home')}"
             "<div class=\"toolbar\">"
             "<button class=\"btn btn-secondary\" hx-post=\"/index-zotero-items\" hx-include=\".key-checkbox:checked\" hx-target=\"#progress\" hx-swap=\"innerHTML\">Index selected</button>"
             "</div>"
@@ -326,14 +367,19 @@ def main(
             return ""
         return render_progress_with_oob_row_updates()
 
-    @app.get("/{id}.json")
-    def passage(id: str):
+    @app.get("/i/{id}.json")
+    def passage_json(id: str):
         res = vector_store.client.get(vector_store.collection_name, ids=[id])
         if not len(res) == 1:
             raise HTTPException(status_code=404)
         return {"llm": Passage.from_chunk(res[0]), "doc": res[0]}
 
-    @app.get("/{id}")
+    # Backward compatibility for older JSON path
+    @app.get("/{id}.json")
+    def passage_json_compat(id: str):
+        return RedirectResponse(url=f"/i/{id}.json", status_code=307)
+
+    @app.get("/i/{id}")
     def inspect(id: str):
         res = vector_store.client.get(vector_store.collection_name, ids=[id])
         if not len(res) == 1:
@@ -361,6 +407,128 @@ def main(
         pdf.close()
         out_buf.seek(0)
         return Response(content=out_buf.getvalue(), media_type="application/pdf")
+
+    def render_passage_html(p: Passage, *, compact: bool, anchor_id: Optional[str] = None) -> str:
+        distance_badge_html = ""
+        if p.distance is not None:
+            # Map distance to a hue from green (good/low) to red (high)
+            hue = 120 - min(max(p.distance * 120, 0), 120)
+            similarity = max(0.0, 1.0 - p.distance)
+            distance_badge_html = (
+                f"<span title=\"similarity\" style=\"display:inline-block; padding:2px 8px; border-radius:9999px; font-size:12px; font-weight:600; color:#fff; background:hsl({hue:.0f}, 85%, 45%);\">"
+                f"{similarity*100:.1f}% similar"
+                "</span>"
+            )
+        body_style = "margin-top:8px; white-space:pre-wrap;" + (" max-height: 12rem; overflow: hidden;" if compact else "")
+        right_links = ""
+        more_html = f"<a class=\"link-small\" href=\"/{p.zotero_item}#p-{p.id}\" title=\"Open full passage\">More</a>" if compact and p.zotero_item else ""
+        inspect_html = f"<a class=\"link-small\" href=\"/i/{p.id}\" target=\"_blank\">Inspect</a>"
+        if compact and more_html:
+            right_links = more_html + " · " + inspect_html
+        else:
+            right_links = inspect_html
+        id_attr = f" id=\"{anchor_id}\"" if anchor_id else ""
+        return (
+            f"<div class=\"passage\"{id_attr} style=\"border:1px solid var(--border); border-radius:10px; padding:12px; background:#fff; box-shadow:0 2px 10px rgba(0,0,0,0.04); break-inside: avoid; display:inline-block; width:100%; margin:0 0 12px;\">"
+            f"<div style=\"display:flex; justify-content:space-between; align-items:center;\">"
+            f"<div><strong>{p.title or p.file}</strong><span class=\"muted\"> · {p.section} · p.{p.page}</span></div>"
+            f"<div></div>"
+            "</div>"
+            f"<div class=\"passage-body\" style=\"{body_style}\">{p.text}</div>"
+            f"<div class=\"bottom-bar\">"
+            f"{distance_badge_html}"
+            f"<div>{right_links}</div>"
+            "</div>"
+            "</div>"
+        )
+
+    @app.get("/explore", response_class=HTMLResponse)
+    def explore(q: Optional[str] = None, top_k: int = 10):
+        results_html = ""
+        if q:
+            embeddings = embed_model.get_text_embedding_batch([q])
+            res = vector_store.client.search(
+                vector_store.collection_name,
+                embeddings,
+                limit=top_k,
+                output_fields=[
+                    "text",
+                    "file_name",
+                    "file_path",
+                    "distance",
+                    "doc_items",
+                    "headings",
+                    "title",
+                    "zotero",
+                ],
+            )
+            passages = list(map(Passage.from_chunk, res[0]))
+            passages.sort(key=lambda p: (p.distance is None, p.distance))
+            cards_html = "".join(render_passage_html(p, compact=True) for p in passages)
+            results_html = (
+                f"<div class=\"muted\" style=\"margin: 8px 0;\">Found {len(passages)} passages</div>"
+                f"<div class=\"results-columns\">{cards_html}</div>"
+            )
+        return (
+            "<!doctype html>"
+            "<html><head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>Explore</title>"
+            f"{styles()}"
+            "</head><body>"
+            f"{render_header_html('explore')}"
+            "<form method=\"get\" action=\"/explore\" class=\"toolbar\">"
+            f"<input class=\"input\" type=\"text\" name=\"q\" value=\"{q or ''}\" placeholder=\"Search\" autofocus />"
+            "<button class=\"btn\" type=\"submit\">Search</button>"
+            "</form>"
+            f"{results_html}"
+            "</body></html>"
+        )
+
+    @app.get("/{item}", response_class=HTMLResponse)
+    def view_item(item: str):
+        # Avoid swallowing other static routes
+        if item in {"mcp", "index-progress", "index-zotero-items", "explore", "i"}:
+            raise HTTPException(status_code=404)
+        if not is_indexed(item):
+            raise HTTPException(status_code=404, detail="Item not indexed")
+        try:
+            it = zot.item(item)
+        except Exception:
+            it = None
+        res = vector_store.client.query(
+            vector_store.collection_name,
+            filter=f'zotero["item"] == "{item}"',
+            limit=16384,
+            output_fields=[
+                "text",
+                "file_name",
+                "file_path",
+                "doc_items",
+                "headings",
+            ],
+        )
+        passages = sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
+        header_html = (
+            f"<div class=\"muted\">{it.meta.creatorSummary}</div><div style=\"font-size:18px; font-weight:600;\">{it.data.title}</div>"
+            if it is not None
+            else f"<div class=\"muted\">Zotero item {item}</div>"
+        )
+        return (
+            "<!doctype html>"
+            "<html><head>"
+            "<meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<title>Item {item}</title>"
+            f"{styles()}"
+            "</head><body>"
+            f"{render_header_html('')}"
+            f"{header_html}"
+            f"<div class=\"muted\" style=\"margin-top:6px;\">{len(passages)} passages</div>"
+            + "".join(render_passage_html(p, compact=False, anchor_id=f"p-{p.id}") for p in passages)
+            + "</body></html>"
+        )
 
     uvicorn.run(app, host="0.0.0.0", port=7777)
 
