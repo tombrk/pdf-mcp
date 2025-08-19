@@ -106,22 +106,10 @@ def main(
     app.mount("/mcp", mcp_app)
 
     def resolve_path(p: Path) -> Path:
-        try:
-            return p.resolve()
-        except FileNotFoundError:
-            # If the file does not exist yet, fall back to absolute()
-            return p.absolute()
+        return p.resolve()
 
     def is_under_docdir(path: Path) -> bool:
-        try:
-            return resolve_path(path).is_relative_to(resolve_path(docdir))
-        except AttributeError:
-            # Python < 3.9 compatibility guard (is_relative_to not available)
-            try:
-                resolve_path(path).relative_to(resolve_path(docdir))
-                return True
-            except Exception:
-                return False
+        return resolve_path(path).is_relative_to(resolve_path(docdir))
 
     def iter_pdf_files_recursively(root: Path):
         for file_path in root.rglob("*"):
@@ -151,32 +139,33 @@ def main(
             if indexed
             else '<span style="color: #dc2626;">Not indexed</span>'
         )
-        btn_label = "Reindex" if indexed else "Index"
+        checkbox_html = (
+            ""
+            if indexed
+            else (
+                f"<input type=\"checkbox\" class=\"pdf-checkbox\" name=\"path\" value=\"{str(resolve_path(file_path))}\" />"
+            )
+        )
         action_html = (
-            f"<button hx-post=\"/index-file\" hx-vals='{{\"path\": \"{str(resolve_path(file_path))}\"}}' "
-            f"hx-target=\"#{row_id}\" hx-swap=\"outerHTML\">{btn_label}</button>"
+            ""
+            if indexed
+            else (
+                f"<button hx-post=\"/index-file\" hx-vals='{{\"path\": \"{str(resolve_path(file_path))}\"}}' "
+                f"hx-target=\"#progress\" hx-swap=\"innerHTML\">Index</button>"
+            )
         )
         return (
             f"<tr id=\"{row_id}\">"
+            f"<td style=\"padding: 6px 10px; width: 28px;\">{checkbox_html}</td>"
             f"<td style=\"padding: 6px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;\">{rel}</td>"
             f"<td style=\"padding: 6px 10px;\">{status_html}</td>"
             f"<td style=\"padding: 6px 10px;\">{action_html}</td>"
             f"</tr>"
         )
 
-    def delete_entries_for_file(file_path: Path) -> None:
-        abs_path = str(resolve_path(file_path))
-        try:
-            vector_store.client.delete(
-                vector_store.collection_name,
-                filter=f'file_path == "{abs_path}"',
-            )
-        except Exception:
-            # If delete is unsupported, ignore and proceed (may duplicate)
-            pass
-
-    async def index_single_file(file_path: Path, *, force: bool = False):
-        if is_indexed(file_path) and not force:
+    async def index_single_file(file_path: Path):
+        # Do not reindex; if present, skip
+        if is_indexed(file_path):
             return
         from llama_index.core import SimpleDirectoryReader, StorageContext, VectorStoreIndex
         from llama_index.node_parser.docling import DoclingNodeParser
@@ -192,8 +181,6 @@ def main(
 
         # Run the heavy indexing work in a thread to avoid blocking the event loop
         def _do_index():
-            if force:
-                delete_entries_for_file(file_path)
             VectorStoreIndex.from_documents(
                 documents=dir_reader.load_data(),
                 transformations=[DoclingNodeParser()],
@@ -203,6 +190,71 @@ def main(
             )
 
         await asyncio.to_thread(_do_index)
+
+    # Single active indexing job state
+    job_lock = asyncio.Lock()
+    current_job: dict | None = None
+
+    def render_progress_card_html() -> str:
+        nonlocal current_job
+        if not current_job:
+            return ""
+        total = current_job.get("total", 0)
+        done = current_job.get("done", 0)
+        percent = int((done / total) * 100) if total else 0
+        remaining = total - done
+        # Progress card fixed at bottom-right
+        return (
+            "<div style=\"position: fixed; right: 16px; bottom: 16px; width: 320px; background: #111827; color: #e5e7eb; border: 1px solid #374151; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.35);\">"
+            "<div style=\"padding: 12px 14px; border-bottom: 1px solid #374151; display:flex; align-items:center; justify-content:space-between;\">"
+            "<div style=\"font-weight: 600;\">Indexing PDFs</div>"
+            f"<div style=\"font-size: 12px; color:#9ca3af;\">{done}/{total}</div>"
+            "</div>"
+            "<div style=\"padding: 12px 14px;\">"
+            f"<div style=\"height: 8px; background:#1f2937; border-radius: 9999px; overflow:hidden;\"><div style=\"height: 100%; width: {percent}%; background: linear-gradient(90deg,#60a5fa,#22d3ee);\"></div></div>"
+            f"<div style=\"margin-top: 8px; font-size: 12px; color:#9ca3af;\">{remaining} remaining</div>"
+            "</div>"
+            "</div>"
+        )
+
+    def render_progress_with_oob_row_updates() -> str:
+        nonlocal current_job
+        if not current_job:
+            return ""
+        # Card
+        html = render_progress_card_html()
+        # OOB updates for any newly finished rows
+        emitted = current_job.setdefault("emitted_done", set())
+        newly_done = [p for p in current_job.get("done_paths", []) if p not in emitted]
+        for p in newly_done:
+            emitted.add(p)
+            row_html = render_row_html(Path(p))
+            # Mark row to swap out-of-band
+            # We need to add hx-swap-oob to the tr
+            # Inject attribute into the opening <tr>
+            row_html_oob = row_html.replace("<tr ", "<tr hx-swap-oob=\"outerHTML\" ", 1)
+            html += row_html_oob
+        return html
+
+    async def run_index_job(paths: list[Path]):
+        nonlocal current_job
+        async with job_lock:
+            current_job = {
+                "total": len(paths),
+                "done": 0,
+                "paths": [str(p) for p in paths],
+                "done_paths": [],
+                "emitted_done": set(),
+                "status": "running",
+            }
+            try:
+                for p in paths:
+                    await index_single_file(p)
+                    current_job["done"] += 1
+                    current_job["done_paths"].append(str(resolve_path(p)))
+            finally:
+                # Mark complete; keep current_job so progress endpoint can clear it
+                current_job["status"] = "done"
 
     @app.get("/", response_class=HTMLResponse)
     def ui_home():
@@ -217,49 +269,72 @@ def main(
             "<title>PDF Index Manager</title>"
             "<script src=\"https://unpkg.com/htmx.org@1.9.12\" integrity=\"sha384-+DR3Eo8Vd7i8xWZt0+kq5L9TxlGmSg1H5dV3r0C6i8qA3wqV+Q3xLrLPB0hKq1uE\" crossorigin=\"anonymous\"></script>"
             "<style>body{font-family: ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", \"Apple Color Emoji\", \"Segoe UI Emoji\"; padding:20px;}"
-            "table{border-collapse: collapse; width:100%;} th,td{border-bottom:1px solid #e5e7eb;} th{text-align:left; color:#374151;} thead tr{background:#f9fafb;} button{background:#2563eb;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;} button:hover{background:#1d4ed8;} </style>"
+            "table{border-collapse: collapse; width:100%;} th,td{border-bottom:1px solid #e5e7eb;} th{text-align:left; color:#374151;} thead tr{background:#f9fafb;} button{background:#2563eb;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;} button:hover{background:#1d4ed8;} .toolbar{display:flex; gap:8px; align-items:center; margin-bottom:10px;} .muted{color:#6b7280;} .btn-secondary{background:#374151;} .btn-secondary:hover{background:#303846;} </style>"
             "</head><body>"
             f"<h2 style=\"margin: 0 0 10px;\">PDF Index Manager</h2>"
-            f"<div style=\"color:#6b7280; margin-bottom: 16px;\">Root: {resolve_path(docdir)}</div>"
+            f"<div class=\"muted\" style=\"margin-bottom: 12px;\">Root: {resolve_path(docdir)}</div>"
+            "<div class=\"toolbar\">"
+            "<button class=\"btn-secondary\" hx-post=\"/index-files\" hx-include=\".pdf-checkbox:checked\" hx-target=\"#progress\" hx-swap=\"innerHTML\">Index selected</button>"
+            "</div>"
             "<table>"
-            "<thead><tr><th style=\"padding: 8px 10px;\">File</th><th style=\"padding: 8px 10px;\">Status</th><th style=\"padding: 8px 10px;\">Action</th></tr></thead>"
-            f"<tbody>{rows_html}</tbody>"
+            "<thead><tr><th style=\"padding: 8px 10px; width:28px;\"></th><th style=\"padding: 8px 10px;\">File</th><th style=\"padding: 8px 10px;\">Status</th><th style=\"padding: 8px 10px;\">Action</th></tr></thead>"
+            f"<tbody id=\"table-body\">{rows_html}</tbody>"
             "</table>"
+            "<div id=\"progress\" hx-get=\"/index-progress\" hx-trigger=\"load, every 700ms\" hx-swap=\"innerHTML\" style=\"position: fixed; right: 16px; bottom: 16px;\"></div>"
             "</body></html>"
         )
 
     @app.post("/index-file", response_class=HTMLResponse)
     async def index_file(request: Request):
-        # Accept JSON, x-www-form-urlencoded, or query param
-        path: Optional[str] = None
-        try:
-            data = await request.json()
-            if isinstance(data, dict):
-                path = data.get("path")
-        except Exception:
-            path = None
-        if not path:
-            try:
-                body_bytes = await request.body()
-                if body_bytes:
-                    from urllib.parse import parse_qs
-                    params = parse_qs(body_bytes.decode("utf-8"))
-                    path = params.get("path", [None])[0]
-            except Exception:
-                path = None
-        if not path:
-            path = request.query_params.get("path")
+        # Accept only form-encoded values from htmx
+        form = await request.form()
+        path = form.get("path")
         if not path:
             raise HTTPException(status_code=400, detail="Missing 'path'")
-
         file_path = Path(path)
         if not is_under_docdir(file_path):
             raise HTTPException(status_code=400, detail="Path is outside of document root")
         if not file_path.exists() or file_path.suffix.lower() != ".pdf":
             raise HTTPException(status_code=404, detail="PDF not found")
+        if job_lock.locked():
+            # Return current progress if busy
+            return render_progress_card_html()
+        # Start a single-file job
+        asyncio.create_task(run_index_job([file_path]))
+        return render_progress_card_html()
 
-        await index_single_file(file_path, force=True)
-        return render_row_html(file_path)
+    @app.post("/index-files", response_class=HTMLResponse)
+    async def index_files(request: Request):
+        # Accept only form-encoded values from htmx with repeated 'path'
+        form = await request.form()
+        paths = form.getlist("path") if hasattr(form, "getlist") else []
+        clean_paths: list[Path] = []
+        for p in paths:
+            fp = Path(p)
+            if is_under_docdir(fp) and fp.exists() and fp.suffix.lower() == ".pdf" and not is_indexed(fp):
+                clean_paths.append(fp)
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_paths = []
+        for p in clean_paths:
+            s = str(resolve_path(p))
+            if s not in seen:
+                seen.add(s)
+                unique_paths.append(p)
+        if not unique_paths:
+            # Nothing to do
+            return ""
+        if job_lock.locked():
+            return render_progress_card_html()
+        asyncio.create_task(run_index_job(unique_paths))
+        return render_progress_card_html()
+
+    @app.get("/index-progress", response_class=HTMLResponse)
+    def index_progress():
+        if not job_lock.locked():
+            # Clear card
+            return ""
+        return render_progress_with_oob_row_updates()
 
     @app.get("/{id}.json")
     def passage(id: str):
