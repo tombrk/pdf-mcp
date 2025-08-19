@@ -18,3 +18,8 @@ dependencies = [
     "uvicorn>=0.35.0",
     "httpx>=0.28.1",
 ]
+
+[tool.uv]
+
+[tool.uv.scripts]
+macos-app = "bash ./scripts/build_macos_app.sh"
