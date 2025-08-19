@@ -267,7 +267,7 @@ def main(
             "<meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
             "<title>PDF Index Manager</title>"
-            "<script src=\"https://unpkg.com/htmx.org@1.9.12\"></script>"
+            "<script src=\"https://unpkg.com/htmx.org@2.0.6\"></script>"
             "<style>body{font-family: ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", \"Apple Color Emoji\", \"Segoe UI Emoji\"; padding:20px;}"
             "table{border-collapse: collapse; width:100%;} th,td{border-bottom:1px solid #e5e7eb;} th{text-align:left; color:#374151;} thead tr{background:#f9fafb;} button{background:#2563eb;color:#fff;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;} button:hover{background:#1d4ed8;} .toolbar{display:flex; gap:8px; align-items:center; margin-bottom:10px;} .muted{color:#6b7280;} .btn-secondary{background:#374151;} .btn-secondary:hover{background:#303846;} </style>"
             "</head><body>"
