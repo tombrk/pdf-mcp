@@ -151,13 +151,10 @@ def main(
             if indexed
             else '<span style="color: #dc2626;">Not indexed</span>'
         )
+        btn_label = "Reindex" if indexed else "Index"
         action_html = (
-            ""
-            if indexed
-            else (
-                f"<button hx-post=\"/index-file\" hx-vals='{{\"path\": \"{str(resolve_path(file_path))}\"}}' "
-                f"hx-target=\"#{row_id}\" hx-swap=\"outerHTML\">Index</button>"
-            )
+            f"<button hx-post=\"/index-file\" hx-vals='{{\"path\": \"{str(resolve_path(file_path))}\"}}' "
+            f"hx-target=\"#{row_id}\" hx-swap=\"outerHTML\">{btn_label}</button>"
         )
         return (
             f"<tr id=\"{row_id}\">"
@@ -167,8 +164,19 @@ def main(
             f"</tr>"
         )
 
-    async def index_single_file(file_path: Path):
-        if is_indexed(file_path):
+    def delete_entries_for_file(file_path: Path) -> None:
+        abs_path = str(resolve_path(file_path))
+        try:
+            vector_store.client.delete(
+                vector_store.collection_name,
+                filter=f'file_path == "{abs_path}"',
+            )
+        except Exception:
+            # If delete is unsupported, ignore and proceed (may duplicate)
+            pass
+
+    async def index_single_file(file_path: Path, *, force: bool = False):
+        if is_indexed(file_path) and not force:
             return
         from llama_index.core import SimpleDirectoryReader, StorageContext, VectorStoreIndex
         from llama_index.node_parser.docling import DoclingNodeParser
@@ -184,6 +192,8 @@ def main(
 
         # Run the heavy indexing work in a thread to avoid blocking the event loop
         def _do_index():
+            if force:
+                delete_entries_for_file(file_path)
             VectorStoreIndex.from_documents(
                 documents=dir_reader.load_data(),
                 transformations=[DoclingNodeParser()],
@@ -248,7 +258,7 @@ def main(
         if not file_path.exists() or file_path.suffix.lower() != ".pdf":
             raise HTTPException(status_code=404, detail="PDF not found")
 
-        await index_single_file(file_path)
+        await index_single_file(file_path, force=True)
         return render_row_html(file_path)
 
     @app.get("/{id}.json")
