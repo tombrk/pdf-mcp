@@ -134,11 +134,6 @@ def main(
         row_id = file_row_id(file_path)
         rel = str(resolve_path(file_path).relative_to(resolve_path(docdir))) if is_under_docdir(file_path) else str(resolve_path(file_path))
         indexed = is_indexed(file_path)
-        status_html = (
-            '<span style="color: #16a34a;">Indexed</span>'
-            if indexed
-            else '<span style="color: #dc2626;">Not indexed</span>'
-        )
         checkbox_html = (
             ""
             if indexed
@@ -147,7 +142,7 @@ def main(
             )
         )
         action_html = (
-            ""
+            f"<button disabled style=\"background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 10px;opacity:.9;cursor:default;\">Indexed</button>"
             if indexed
             else (
                 f"<button hx-post=\"/index-file\" hx-vals='{{\"path\": \"{str(resolve_path(file_path))}\"}}' "
@@ -158,7 +153,6 @@ def main(
             f"<tr id=\"{row_id}\">"
             f"<td style=\"padding: 6px 10px; width: 28px;\">{checkbox_html}</td>"
             f"<td style=\"padding: 6px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, \"Liberation Mono\", \"Courier New\", monospace;\">{rel}</td>"
-            f"<td style=\"padding: 6px 10px;\">{status_html}</td>"
             f"<td style=\"padding: 6px 10px;\">{action_html}</td>"
             f"</tr>"
         )
@@ -277,7 +271,7 @@ def main(
             "<button class=\"btn-secondary\" hx-post=\"/index-files\" hx-include=\".pdf-checkbox:checked\" hx-target=\"#progress\" hx-swap=\"innerHTML\">Index selected</button>"
             "</div>"
             "<table>"
-            "<thead><tr><th style=\"padding: 8px 10px; width:28px;\"></th><th style=\"padding: 8px 10px;\">File</th><th style=\"padding: 8px 10px;\">Status</th><th style=\"padding: 8px 10px;\">Action</th></tr></thead>"
+            "<thead><tr><th style=\"padding: 8px 10px; width:28px;\"></th><th style=\"padding: 8px 10px;\">File</th><th style=\"padding: 8px 10px;\">Action</th></tr></thead>"
             f"<tbody id=\"table-body\">{rows_html}</tbody>"
             "</table>"
             "<div id=\"progress\" hx-get=\"/index-progress\" hx-trigger=\"load, every 700ms\" hx-swap=\"innerHTML\" style=\"position: fixed; right: 16px; bottom: 16px;\"></div>"
