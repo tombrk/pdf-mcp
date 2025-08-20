@@ -549,36 +549,36 @@ def main(
             + "</body></html>"
         )
 
-    # On macOS, run rumps on the main thread and uvicorn in the background.
-    # On other platforms, run uvicorn normally.
+    # On macOS, run rumps in a background thread and keep uvicorn in the foreground.
     if sys.platform == "darwin":
-        def _start_server():
-            uvicorn.run(app, host="0.0.0.0", port=7777)
-        threading.Thread(target=_start_server, name="uvicorn-server", daemon=True).start()
-
         try:
             import rumps
-        except Exception:
-            # If rumps is unavailable, just keep the server running in background
-            # This avoids breaking non-macOS environments inadvertently.
-            threading.Event().wait()
-            return
+        except Exception as e:
+            raise
 
-        def open_home(_=None):
-            webbrowser.open("http://localhost:7777/")
+        class ZoteroStatusBarApp(rumps.App):
+            def __init__(self):
+                super().__init__("Zotero MCP", callback=self._open_home)
+                self.menu = [
+                    "Open Home",
+                    None,
+                    "Quit",
+                ]
 
-        def quit_app(_=None):
-            sys.exit(0)
+            @rumps.clicked("Open Home")
+            def _open_home(self, _):
+                webbrowser.open("http://localhost:7777/")
 
-        app_tray = rumps.App("Zotero MCP", callback=open_home)
-        app_tray.menu = [
-            rumps.MenuItem("Open Home", callback=open_home),
-            None,
-            rumps.MenuItem("Quit", callback=quit_app),
-        ]
-        app_tray.run()
-    else:
-        uvicorn.run(app, host="0.0.0.0", port=7777)
+            @rumps.clicked("Quit")
+            def _quit(self, _):
+                sys.exit(0)
+
+        def _run_rumps():
+            ZoteroStatusBarApp().run()
+
+        threading.Thread(target=_run_rumps, name="rumps-menubar", daemon=True).start()
+
+    uvicorn.run(app, host="0.0.0.0", port=7777)
 
 
 if __name__ == "__main__":
