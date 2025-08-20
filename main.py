@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field
 from typing import Optional, Annotated
 from pathlib import Path
 import uvicorn
+import sys
+import threading
+import webbrowser
 import pymupdf
 import io
 import asyncio
@@ -546,8 +549,18 @@ def main(
             + "</body></html>"
         )
 
-    uvicorn.run(app, host="0.0.0.0", port=7777)
+    import rumps
 
+    class StatusBar(rumps.App):
+        @rumps.clicked("Open")
+        def open(self, _):
+            webbrowser.open("http://localhost:7777/")
+
+    def uvirun():
+        uvicorn.run(app, host="0.0.0.0", port=7777)
+
+    threading.Thread(target=uvirun, name="uvicorn", daemon=True).start()
+    StatusBar("Zmcp").run()
 
 if __name__ == "__main__":
     arguably.run()
