@@ -28,7 +28,7 @@ class Passage(BaseModel):
         description="Vector distance of the query to this match"
     )
     section: str = Field(description="The subsection this passage appeared under")
-    ref: str = Field(exclude=True)
+    ref: str # = Field(exclude=True)
     bbox: dict = Field(exclude=True)
     title: Optional[str] = Field(default=None, description="Document title")
     zotero_item: Optional[str] = Field(default=None, description="Zotero item key")
@@ -42,7 +42,7 @@ class Passage(BaseModel):
             text=chunk["text"],
             distance=chunk.get("distance") or None,
             id=chunk["id"],
-            section=",".join(chunk["headings"]),
+            section=",".join(chunk.get("headings", [])),
             page=meta["prov"][0]["page_no"],
             bbox=meta["prov"][0]["bbox"],
             ref=meta["self_ref"],
@@ -104,7 +104,7 @@ def main(
         res = vector_store.client.query(
             vector_store.collection_name, filter=f'headings[0] == "{section}"'
         )
-        return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
+        return sorted(list(map(Passage.from_chunk, res)), key=lambda x: (x.page,x.ref))
 
     @mcp.tool
     def read_file(item_key: str) -> list[Passage]:
@@ -112,7 +112,7 @@ def main(
         res = vector_store.client.query(
             vector_store.collection_name, filter=f'zotero["item"] == "{item_key}"'
         )
-        return sorted(list(map(Passage.from_chunk, res)), key=lambda x: x.ref)
+        return sorted(list(map(Passage.from_chunk, res)), key=lambda x: (x.page,x.ref))
 
     @mcp.tool
     def list_files() -> list[File]:
@@ -560,7 +560,7 @@ def main(
         uvicorn.run(app, host="0.0.0.0", port=7777)
 
     threading.Thread(target=uvirun, name="uvicorn", daemon=True).start()
-    StatusBar("Zmcp").run()
+    StatusBar("📚").run()
 
 if __name__ == "__main__":
     arguably.run()
